@@ -1,6 +1,6 @@
 {
   "name": "@agent2game/a2g",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "A2G (Agent2Game) protocol 0.1 client for JavaScript and TypeScript games, browser and Node",
   "license": "Apache-2.0",
   "homepage": "https://agent2game.org",

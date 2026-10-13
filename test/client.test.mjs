@@ -16,6 +16,7 @@ const DEFS = { '/v1/session': 'SessionRequest', '/v1/context': 'ContextRequest',
 
 const MANIFEST = {
   world: 'Test arena.',
+  world_fields: { threat: 'number' },
   scopes: { hall: { text: 'The great hall.' } },
   entity_types: {
     guard: { description: 'A guard.', fields: { hp: 'number', alert: 'boolean' }, actions: { attack: 'Attack', flee: 'Run away' },
@@ -255,6 +256,37 @@ test('telemetry stays within the schema with many decision slots', async () => {
   await a2g.sendTelemetry();  // the fake service validates the message against the schema
   const decision = fake.sent.findLast((m) => m.path === '/v1/telemetry').body.entities[0].decision;
   assert.ok(decision.action.length <= 80 && Object.keys(decision.slots).length === 12);
+});
+
+test('manifest drift: a mismatch is never sent, warns once, and strict mode throws', async () => {
+  const warnings = [];
+  const warn = console.warn;
+  console.warn = (message) => warnings.push(message);
+  try {
+    const { a2g, fake } = setup();
+    const g = guard('g1', { legal: ['attack', 'taunt'] });  // the game gained an action the manifest does not know
+    g.alert = 'yes';                                        // and a field changed type
+    a2g.track(g, 'guard');
+    assert.deepEqual(a2g.validate(g), ['guard.observation.alert is "yes", not a valid boolean', 'guard: action "taunt" is not in the manifest']);
+    a2g.setAiEnabled(true);
+    await a2g.decideNow();
+    await a2g.decideNow();
+    assert.equal(fake.paths().includes('/v1/decide'), false, 'nothing invalid reaches the service');
+    assert.equal(a2g.execute(g, 0), false, 'the native AI keeps control');
+    assert.equal(a2g.decision(g).code, 'mismatch');
+    assert.match(a2g.lastError, /Manifest mismatch/);
+    assert.equal(warnings.length, 2, 'one warning per problem, not per request');
+  } finally {
+    console.warn = warn;
+  }
+  const strict = setup(undefined, { strict: true });
+  strict.a2g.track(guard('g2', { legal: ['taunt'] }), 'guard');
+  strict.a2g.setAiEnabled(true);
+  await assert.rejects(strict.a2g.decideNow(), /Manifest mismatch: guard: action "taunt" is not in the manifest/);
+  const world = setup(undefined, { strict: true, world: () => ({ threat: 1, weather: 'rain' }) });
+  world.a2g.track(guard('g3'), 'guard');
+  world.a2g.setAiEnabled(true);
+  await assert.rejects(world.a2g.decideNow(), /world.weather is not declared/);
 });
 
 test('decideNow sends every entity in batches of 16', async () => {

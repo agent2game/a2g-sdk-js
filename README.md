@@ -4,21 +4,21 @@ Client for the [A2G (Agent2Game) protocol](https://agent2game.org) 0.1 for web a
 
 | SDK | Protocol | Runtime |
 | --- | --- | --- |
-| `0.2.2` | `0.1` | Browsers with `fetch`; Node 22.18+ |
+| `0.3.0` | `0.1` | Browsers with `fetch`; Node 22.18+ |
 
 ## Install
 
 Not on npm yet. Install from GitHub (the package builds itself on install):
 
 ```sh
-npm install github:agent2game/a2g-sdk-js#v0.2.2
+npm install github:agent2game/a2g-sdk-js#v0.3.0
 ```
 
-Tags are never moved, but for supply-chain safety you can pin the exact commit a tag points to: `git ls-remote https://github.com/agent2game/a2g-sdk-js v0.2.2` prints it, then `npm install github:agent2game/a2g-sdk-js#<commit>`.
+Tags are never moved, but for supply-chain safety you can pin the exact commit a tag points to: `git ls-remote https://github.com/agent2game/a2g-sdk-js v0.3.0` prints it, then `npm install github:agent2game/a2g-sdk-js#<commit>`.
 
 ## Demo
 
-A browser page with a player and four guards (plain canvas, no build tools), the same scene as the Godot SDK demo. Start a decision service first, for example the [reference service](https://github.com/agent2game/a2g-service): `docker run -d -p 127.0.0.1:8787:8787 -e OPENAI_API_KEY=... ghcr.io/agent2game/a2g-service:0.1.1` (or `TYPESAFE_API_KEY` with `A2G_PROVIDER=jev`). Then:
+A browser page with a player and four guards (plain canvas, no build tools), the same scene as the Godot SDK demo. Start a decision service first, for example the [reference service](https://github.com/agent2game/a2g-service): `docker run -d -p 127.0.0.1:8787:8787 -e OPENAI_API_KEY=... ghcr.io/agent2game/a2g-service:0.1.2` (or `TYPESAFE_API_KEY` with `A2G_PROVIDER=jev`). Then:
 
 ```sh
 npm ci && npm run build && npm run demo   # http://127.0.0.1:5180/
@@ -99,6 +99,17 @@ const a2g = new A2G({ manifest, sample: sampler(game.rng) }); // game.rng(): num
 
 Sampling happens on a decision's first `execute()`, in your loop's order, so replays stay identical. Reports carry the actions the game actually executed.
 
+## Manifest drift checks
+
+Before anything is sent, the SDK checks each observation, the world, the scope state and every legal action against the manifest. A mismatch never reaches the service: that entity stays on native AI (decision code `mismatch`), `lastError` names the field and value, and a warning is printed once per problem. In tests, turn it into a failure:
+
+```ts
+const a2g = new A2G({ manifest, strict: true });   // a mismatch throws, so a game change that breaks the integration fails the build
+expect(a2g.validate(guard)).toEqual([]);            // or check one entity: ['guard.observation.mood is "furious", not one of "calm", "angry"']
+```
+
+See [Keep it in sync](https://agent2game.org/guides/integrate/#keep-it-in-sync).
+
 ## Adapter contract
 
 | Method | Required | Purpose |
@@ -112,7 +123,7 @@ Sampling happens on a decision's first `execute()`, in your loop's order, so rep
 | `intervalMs(entity)` | no | Refresh interval (default: the type's `refresh_ms`, then 3000 ms) |
 | `release(entity)` | no | Called when native AI takes control back |
 
-Other calls: `track(entity, type, { id, name, profile, parent })`, `untrack(entity)` (reports the open decision), `setParent(entity, parent)`, `updateContext(scopes, profiles)`, `scopeReady(name)`, `decision(entity)`, `entityId(entity)`, `stop()`. Status fields: `serviceStatus`, `sessionReady`, `lastError`, `epoch`, `forbidden`.
+Other calls: `track(entity, type, { id, name, profile, parent })`, `untrack(entity)` (reports the open decision), `setParent(entity, parent)`, `updateContext(scopes, profiles)`, `scopeReady(name)`, `decision(entity)`, `entityId(entity)`, `validate(entity)`, `stop()`. Status fields: `serviceStatus`, `sessionReady`, `lastError`, `epoch`, `forbidden`.
 
 ## What it does
 
@@ -129,6 +140,7 @@ Same behavior as the [Godot SDK](https://agent2game.org/implementations/godot-sd
 | `defaultIntervalMs` | `3000` | Refresh interval when neither the adapter nor the manifest sets one |
 | `minIntervalMs` | `500` | Minimum time between two requests for one entity |
 | `telemetryIntervalMs` | `1000` | Telemetry period of `start()` |
+| `strict` | `false` | Manifest drift checks throw instead of warning (tests, development) |
 | `headers` | none | Extra request headers (for future `server`/`client` profile credentials) |
 | `fetch`, `now` | globals | Injected for tests |
 

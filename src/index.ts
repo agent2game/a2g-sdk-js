@@ -110,6 +110,13 @@ export interface Options {
    * of a decision, in the game's own order.
    */
   sample?: Sampler;
+  /**
+   * Manifest drift checks. Before anything is sent, the SDK checks each observation, world, scope state and legal
+   * action against the manifest. A mismatch never reaches the service: that entity (or batch) stays with the native AI,
+   * lastError explains it and a warning is printed once per problem. With strict: true (tests, development) a mismatch
+   * throws instead, so a game change that breaks the integration fails the build.
+   */
+  strict?: boolean;
   /** Injected for tests or runtimes without a global fetch. */
   fetch?: typeof fetch;
   /** Milliseconds clock. Default performance.now() or Date.now(). */
@@ -227,8 +234,9 @@ export class A2G {
       (timer as any).unref?.();  // never keep a Node process alive
       this.timers.push(timer);
     };
-    every(this.options.batchIntervalMs ?? 250, () => this.tick());
-    every(this.options.telemetryIntervalMs ?? 1000, () => this.sendTelemetry());
+    const logged = (fn: () => Promise<void>) => () => fn().catch((error) => console.error('[a2g]', error instanceof Error ? error.message : error));
+    every(this.options.batchIntervalMs ?? 250, logged(() => this.tick()));
+    every(this.options.telemetryIntervalMs ?? 1000, logged(() => this.sendTelemetry()));
     void this.checkService();
     return this;
   }
@@ -272,6 +280,31 @@ export class A2G {
 
   entityId(entity: object): string | undefined {
     return this.byEntity.get(entity)?.id;
+  }
+
+  /**
+   * Manifest drift check for one tracked entity: its observation and legal actions against its type in the manifest.
+   * Returns readable problems, empty when the entity matches. Use it in the game's tests after changing entities.
+   */
+  validate(entity: object): string[] {
+    const tracked = this.byEntity.get(entity);
+    const adapter = tracked && this.adapters.get(tracked.type);
+    if (!tracked || !adapter) return ['not tracked, or no adapter for its type'];
+    const spec = this.typeSpec(tracked);
+    if (!this.manifest.entity_types?.[tracked.type]) return [`type "${tracked.type}" is not in the manifest`];
+    const problems = fieldProblems(spec.fields ?? {}, adapter.observe(tracked.entity), `${tracked.type}.observation`);
+    const raw = adapter.legalActions(tracked.entity) ?? [];
+    if (spec.decisions) {
+      if (!isRecord(raw)) problems.push(`${tracked.type}.legalActions must return { slot: actions } for a type with decisions`);
+      for (const [slot, actions] of Object.entries(isRecord(raw) ? raw : {})) {
+        if (!spec.decisions[slot]) problems.push(`${tracked.type}: slot "${slot}" is not in the manifest's decisions`);
+        else for (const action of actions ?? []) if (!Object.hasOwn(spec.decisions[slot].actions, action)) problems.push(`${tracked.type}.${slot}: action "${action}" is not in the manifest`);
+      }
+    } else {
+      if (!Array.isArray(raw)) problems.push(`${tracked.type}.legalActions must return an array`);
+      for (const action of Array.isArray(raw) ? raw : []) if (!Object.hasOwn(spec.actions ?? {}, action)) problems.push(`${tracked.type}: action "${action}" is not in the manifest`);
+    }
+    return problems;
   }
 
   /** The entity's current decision (AI or FALLBACK), if any. */
@@ -406,6 +439,15 @@ export class A2G {
 
   /** Send entities in batches of maxBatch: at most maxRequests batches, in waves of at most maxInflight open requests. */
   private async send(due: Tracked[], now: number, maxRequests: number, timeoutMs = 4000): Promise<void> {
+    const shared = fieldProblems(this.manifest.world_fields ?? {}, this.world(), 'world');
+    const active = this.scope();
+    if (active) {
+      const chain: Record<string, any> = {};
+      for (let name: string | undefined = active.scope; name && this.manifest.scopes?.[name]; name = this.manifest.scopes[name].parent) Object.assign(chain, this.manifest.scopes[name].fields ?? {});
+      if (!this.scopeReady(active.scope)) shared.push(`scope "${active.scope}" is not in the manifest and was not added with updateContext()`);
+      else if (Object.keys(chain).length || Object.keys(active.state ?? {}).length) shared.push(...fieldProblems(chain, active.state ?? {}, `scope_state of "${active.scope}"`));
+    }
+    if (shared.length) return this.mismatch(shared);  // the whole batch would be rejected
     const batches: [Tracked, Record<string, Json>][][] = [];
     let batch: [Tracked, Record<string, Json>][] = [];
     for (const tracked of due) {
@@ -428,7 +470,27 @@ export class A2G {
   }
 
   /** One decide entity, or null when it should not be asked (observe-only or nothing legal). */
+  private warned = new Set<string>();
+
+  /** A manifest mismatch: never sent; strict throws, otherwise warn once per problem and stay native. */
+  private mismatch(problems: string[]): void {
+    const message = 'Manifest mismatch: ' + problems.join('; ');
+    if (this.options.strict) throw new Error('[a2g] ' + message);
+    this.lastError = message.slice(0, 300);
+    for (const problem of problems) {
+      if (this.warned.has(problem)) continue;
+      this.warned.add(problem);
+      console.warn('[a2g] manifest mismatch: ' + problem + ' (the native AI keeps control; update the manifest or the adapter)');
+    }
+  }
+
   private decideEntity(tracked: Tracked): Record<string, Json> | null {
+    const problems = this.validate(tracked.entity);
+    if (problems.length) {
+      this.mismatch(problems);
+      tracked.decision = { source: 'FALLBACK', code: 'mismatch', reason: problems[0].slice(0, 200), ttl_ms: 0, latency_ms: 0, received_at: this.now() };
+      return null;
+    }
     const adapter = this.adapters.get(tracked.type)!;
     const spec = this.typeSpec(tracked);
     const raw = adapter.legalActions(tracked.entity) ?? [];
@@ -680,6 +742,32 @@ export class A2G {
 }
 
 /** A slot or decision result as the game may use it: probabilities only for offered actions and within [0, 1]. */
+/** Problems of `data` against a field schema, with the same rules the service applies. */
+export function fieldProblems(schema: Record<string, any>, data: unknown, label: string): string[] {
+  if (!isRecord(data)) return [`${label} must be an object`];
+  const problems: string[] = [];
+  for (const name of Object.keys(data)) if (!Object.hasOwn(schema, name)) problems.push(`${label}.${name} is not declared in the manifest`);
+  for (const [name, kind] of Object.entries(schema)) {
+    if (!Object.hasOwn(data, name)) { problems.push(`${label}.${name} is missing`); continue; }
+    const value = data[name];
+    const where = `${label}.${name}`;
+    if (isRecord(kind)) {
+      if (!Array.isArray(value) || value.length > kind.max) problems.push(`${where} must be a list of at most ${kind.max} objects`);
+      else value.forEach((item, index) => problems.push(...fieldProblems(kind.list, item, `${where}[${index}]`)));
+    } else if (Array.isArray(kind)) {
+      if (!kind.some((option) => option === value)) problems.push(`${where} is ${JSON.stringify(value)}, not one of ${kind.map((v) => JSON.stringify(v)).join(', ')}`);
+    } else {
+      const ok = kind === 'boolean' ? typeof value === 'boolean'
+        : kind === 'string' ? typeof value === 'string' && value.length <= 80
+        : kind === 'entity_ref' ? typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,80}$/.test(value)
+        : kind === 'vector2' || kind === 'vector3' ? Array.isArray(value) && value.length === Number(kind.at(-1)) && value.every(isNumber)
+        : isNumber(value);
+      if (!ok) problems.push(`${where} is ${JSON.stringify(value)}, not a valid ${kind}`);
+    }
+  }
+  return problems;
+}
+
 function cleanResult(r: Record<string, any>, legal: string[]): SlotResult {
   const result: SlotResult = {};
   if (typeof r.action === 'string') {

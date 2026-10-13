@@ -134,7 +134,7 @@ interface Tracked {
   profile?: string;
   parent?: string;
   trigger?: string;
-  decision?: Decision & { start_observation?: Fields; start_world?: Fields; blocked?: boolean; ran?: boolean; reported?: boolean };
+  decision?: Decision & { legal?: string[] | Record<string, string[]>; start_observation?: Fields; start_world?: Fields; blocked?: boolean; ran?: boolean; reported?: boolean };
   pending: boolean;
   next: number;
   lastRequest: number;
@@ -369,8 +369,10 @@ export class A2G {
   private choose(tracked: Tracked, decision: NonNullable<Tracked['decision']>): void {
     const sample = this.options.sample;
     const pick = (result: SlotResult, slot?: string) => {
-      const legal = slot === undefined ? this.typeSpec(tracked).actions ?? {} : this.typeSpec(tracked).decisions?.[slot]?.actions ?? {};
-      const options = Object.entries(result.probabilities ?? {}).filter(([action, p]) => Object.hasOwn(legal, action) && isNumber(p) && p > 0);
+      // Only what this request offered: the service's probabilities are never trusted to name a legal action.
+      const offered = decision.legal;
+      const legal: string[] = Array.isArray(offered) ? offered : slot !== undefined && offered ? offered[slot] ?? [] : [];
+      const options = Object.entries(result.probabilities ?? {}).filter(([action, p]) => legal.includes(action) && isNumber(p) && p > 0);
       const chosen = sample && options.length ? sample(Object.fromEntries(options), { entity: tracked.entity, slot }) : result.action!;
       return options.some(([action]) => action === chosen) ? chosen : result.action!;
     };
@@ -487,7 +489,7 @@ export class A2G {
       let decision: NonNullable<Tracked['decision']>;
       if (answer.source === 'AI' && valid && typeof answer.decision_id === 'string') {
         decision = {
-          source: 'AI', ...(slots ? { slots } : cleanResult(answer)),
+          source: 'AI', ...(slots ? { slots } : cleanResult(answer)), legal,
           decision_id: answer.decision_id, cached: answer.cached === true, trigger: (request.trigger as string) ?? '',
           ttl_ms: isNumber(answer.ttl_ms) ? answer.ttl_ms : 12000, latency_ms: now - started, received_at: now,
           // copies: games often mutate one world or observation object in place

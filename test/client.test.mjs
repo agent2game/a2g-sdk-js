@@ -219,6 +219,18 @@ test('sampling with the game RNG: varied like native AI, identical on replay', a
   assert.deepEqual(await run(), first, 'same seed, same actions');
 });
 
+test('sampling never picks an action the request did not offer', async () => {
+  const { a2g, executed } = setup((path, body) => (path === '/v1/decide' ? [200, { a2g: '0.1', epoch: body.epoch, decisions: [
+    { id: body.entities[0].id, source: 'AI', action: 'attack', ttl_ms: 1000, decision_id: 'd_x', probabilities: { attack: 0.001, flee: 0.999 } }] }] : undefined),
+    { sample: () => 'flee' });
+  const g = guard('g1', { legal: ['attack'] });  // flee is a manifest action but not legal now
+  a2g.track(g, 'guard');
+  a2g.setAiEnabled(true);
+  await a2g.decideNow();
+  assert.equal(a2g.execute(g, 0), true);
+  assert.deepEqual(executed, [['g1', 'attack']]);
+});
+
 test('decideNow sends every entity in batches of 16', async () => {
   const { a2g, fake } = setup();
   const guards = Array.from({ length: 40 }, (_, i) => guard('g' + i));

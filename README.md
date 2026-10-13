@@ -16,13 +16,13 @@ npm install github:agent2game/a2g-sdk-js#v0.2.1
 
 ## Demo
 
-A browser page with a player and four guards (plain canvas, no build tools), the same scene as the Godot SDK demo. Start the [decision service](https://agent2game.org/implementations/service/) first, then:
+A browser page with a player and four guards (plain canvas, no build tools), the same scene as the Godot SDK demo. Start a decision service first, for example the [reference service](https://github.com/agent2game/a2g-service): `docker run -d -p 127.0.0.1:8787:8787 -e OPENAI_API_KEY=... ghcr.io/agent2game/a2g-service:0.1.0` (or `TYPESAFE_API_KEY` with `A2G_PROVIDER=jev`). Then:
 
 ```sh
 npm ci && npm run build && npm run demo   # http://127.0.0.1:5180/
 ```
 
-Move with the arrow keys or WASD, hit guards with Space, switch AI mode with the button or `M`. Colors show who controls each guard: blue native AI, green an A2G decision (with its confidence), amber fallback. `demo/serve.mjs` serves the page and forwards `/a2g/*` to the service (`A2G_URL`, default `http://127.0.0.1:8787`) without the browser's `Origin`, as the local profile requires; the session shows up in the Agent2Game Console.
+Move with the arrow keys or WASD, hit guards with Space, switch AI mode with the button or `M`. Colors show who controls each guard: blue native AI, green an A2G decision (with its confidence), amber fallback. `demo/serve.mjs` serves the page and forwards `/a2g/v1/*` and `/a2g/health` to the service (`A2G_URL`, default `http://127.0.0.1:8787`) without the browser's `Origin`, as the local profile requires; the session shows up in the Agent2Game Console.
 
 ## Real-time games
 

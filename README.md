@@ -4,14 +4,14 @@ Client for the [A2G (Agent2Game) protocol](https://agent2game.org) 0.1 for web a
 
 | SDK | Protocol | Runtime |
 | --- | --- | --- |
-| `0.1.0` | `0.1` | Browsers with `fetch`; Node 22.18+ |
+| `0.1.1` | `0.1` | Browsers with `fetch`; Node 22.18+ |
 
 ## Install
 
 Not on npm yet. Install from GitHub (the package builds itself on install):
 
 ```sh
-npm install github:agent2game/a2g-sdk-js#v0.1.0
+npm install github:agent2game/a2g-sdk-js#v0.1.1
 ```
 
 ## Demo
@@ -67,7 +67,7 @@ await a2g.decideNow();               // every tracked entity, in batches of 16, 
 for (const person of people) {
   if (!a2g.execute(person, 0)) applyNativeChoice(person);
 }
-await a2g.sendTelemetry();           // or call start() just for telemetry
+await a2g.sendTelemetry();           // after every turn: state changes only on turns
 ```
 
 Keep the client on the server when the game state must not reach the browser.
@@ -89,7 +89,7 @@ Other calls: `track(entity, type, { id, name, profile, parent })`, `untrack(enti
 
 ## What it does
 
-Same behavior as the [Godot SDK](https://agent2game.org/implementations/godot-sdk/): opens a session and reopens it after `401`/`409`, replaying context updates; sends up to 16 entities per decide request with at most 2 in flight; re-asks everyone (after at least 500 ms) when the number of tracked entities changes; drops replies from an old epoch, re-checks that the action was offered and has a `decision_id`, expires decisions after `ttl_ms`; reports each finished decision with numeric deltas; sends telemetry every second and checks `/health` every 5 s; stops after `403`, waits for `Retry-After` after `429`. Network errors never throw.
+Same behavior as the [Godot SDK](https://agent2game.org/implementations/godot-sdk/): opens a session and reopens it after `401`/`409`, replaying context updates; sends up to 16 entities per decide request with at most 2 in flight; re-asks everyone (after at least 500 ms) when the number of tracked entities changes; drops replies from an old epoch, re-checks that the action was offered and has a `decision_id`, expires decisions after `ttl_ms`; reports each finished decision with numeric deltas (a decision that ran counts as `executed` when it is replaced, even if a long turn outlasted its TTL); sends telemetry every second and checks `/health` every 5 s; stops after `403`, waits for `Retry-After` after `429`. Network errors never throw.
 
 ## Options
 

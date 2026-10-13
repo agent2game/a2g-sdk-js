@@ -97,7 +97,7 @@ interface Tracked {
   profile?: string;
   parent?: string;
   trigger?: string;
-  decision?: Decision & { start_observation?: Fields; start_world?: Fields; blocked?: boolean; reported?: boolean };
+  decision?: Decision & { start_observation?: Fields; start_world?: Fields; blocked?: boolean; ran?: boolean; reported?: boolean };
   pending: boolean;
   next: number;
   lastRequest: number;
@@ -318,10 +318,11 @@ export class A2G {
     if (!this.aiEnabled || !tracked || !adapter) return false;
     const decision = tracked.decision;
     if (!decision || !this.isFresh(decision)) {
-      this.finish(tracked);
+      this.finish(tracked, true);
       adapter.release?.(entity);
       return false;
     }
+    decision.ran = true;
     if (!adapter.execute(entity, decision.action!, dt)) decision.blocked = true;
     return true;
   }
@@ -436,13 +437,17 @@ export class A2G {
     }
   }
 
-  /** Report the outcome of the entity's current AI decision once: numeric deltas of its observation and the world. */
-  private finish(tracked: Tracked): void {
+  /**
+   * Report the outcome of the entity's current AI decision once: numeric deltas of its observation and the world.
+   * `expiring` = its TTL ran out with no new decision. A decision that ran and is replaced or untracked counts as
+   * executed even after its TTL, which is the normal case in turn-based games where a turn outlasts the TTL.
+   */
+  private finish(tracked: Tracked, expiring = false): void {
     const decision = tracked.decision;
     if (decision?.source !== 'AI' || decision.reported) return;
     decision.reported = true;
     const adapter = this.adapters.get(tracked.type);
-    const status = decision.blocked ? 'blocked' : this.isFresh(decision) ? 'executed' : 'expired';
+    const status = decision.blocked ? 'blocked' : !expiring && (decision.ran || this.isFresh(decision)) ? 'executed' : 'expired';
     const outcome: Fields = {};
     if (adapter) addDeltas(outcome, '', decision.start_observation ?? {}, adapter.observe(tracked.entity));
     addDeltas(outcome, 'world_', decision.start_world ?? {}, this.world());

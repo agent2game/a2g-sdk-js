@@ -150,6 +150,22 @@ test('a blocked action is reported as blocked', async () => {
   assert.equal(fake.sent.find((m) => m.path === '/v1/report').body.status, 'blocked');
 });
 
+test('turn-based: a decision that ran is reported as executed even when the turn outlasts its TTL', async () => {
+  const { a2g, fake, advance } = setup();
+  const g = guard('g1');
+  a2g.track(g, 'guard');
+  a2g.setAiEnabled(true);
+  await a2g.decideNow();
+  assert.equal(a2g.execute(g, 0), true);
+  advance(120000);  // the player thinks for two minutes; the TTL is 1 s
+  await a2g.decideNow();
+  assert.deepEqual(fake.sent.filter((m) => m.path === '/v1/report').map((m) => m.body.status), ['executed']);
+  advance(120000);
+  assert.equal(a2g.execute(g, 0), false, 'a decision that was never executed and expired');
+  await a2g.decideNow();
+  assert.deepEqual(fake.sent.filter((m) => m.path === '/v1/report').map((m) => m.body.status), ['executed', 'expired']);
+});
+
 test('decideNow sends every entity in batches of 16', async () => {
   const { a2g, fake } = setup();
   const guards = Array.from({ length: 40 }, (_, i) => guard('g' + i));

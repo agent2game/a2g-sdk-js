@@ -24,7 +24,7 @@
   "scripts": {
     "build": "tsc -p .",
     "prepare": "tsc -p .",
-    "test": "tsc -p . --noEmit && node --test test/",
+    "test": "tsc -p . --noEmit && node --test 'test/*.test.mjs'",
     "demo": "node demo/serve.mjs"
   },
   "devDependencies": {

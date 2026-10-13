@@ -1,0 +1,34 @@
+{
+  "world": "A minimal A2G demo in a browser: a player and a few guards on an empty plane. Distances are in pixels. The player can hit guards that are close.",
+  "world_fields": {
+    "player_hp_fraction": "number"
+  },
+  "entity_types": {
+    "guard": {
+      "description": "A careful guard. Attacks when the player is close and it is healthy, keeps its distance when hurt.",
+      "fields": {
+        "hp_fraction": "number",
+        "distance_to_player": "number",
+        "sees_player": "boolean"
+      },
+      "actions": {
+        "chase": "Move toward the player",
+        "wait": "Hold position",
+        "retreat": "Move away from the player"
+      },
+      "events": {
+        "player_spotted": "The player just came into view"
+      },
+      "decision_ttl_ms": 8000,
+      "refresh_ms": 6000,
+      "perception_radius": 160
+    },
+    "player": {
+      "description": "The human-controlled player. Not controlled by A2G.",
+      "fields": {
+        "hp_fraction": "number"
+      },
+      "actions": {}
+    }
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "name": "@agent2game/a2g",
+  "version": "0.1.0",
+  "description": "A2G (Agent2Game) protocol 0.1 client for JavaScript and TypeScript games, browser and Node",
+  "license": "Apache-2.0",
+  "homepage": "https://agent2game.org",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "prepare": "tsc -p .",
+    "test": "tsc -p . --noEmit && node --test test/",
+    "demo": "node demo/serve.mjs"
+  },
+  "devDependencies": {
+    "ajv": "^8.17.1",
+    "typescript": "^5.9.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agent2game/a2g-sdk-js.git"
+  }
+}

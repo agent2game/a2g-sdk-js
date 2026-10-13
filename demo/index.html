@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A2G JS SDK demo</title>
+<style>
+  :root { --bg: #14161b; --panel: #1d2027; --text: #e7e9ee; --muted: #9aa1ad; --native: #4f8fe8; --ai: #3fbf6a; --fallback: #e0a030; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p { margin: 0 0 12px; color: var(--muted); }
+  canvas { display: block; width: 100%; height: auto; background: var(--panel); border-radius: 8px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 12px 0; }
+  button { background: var(--panel); color: var(--text); border: 1px solid #343944; border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+  button[aria-pressed="true"] { border-color: var(--ai); color: var(--ai); }
+  kbd { background: var(--panel); border: 1px solid #343944; border-radius: 4px; padding: 0 4px; }
+  #status { color: var(--muted); }
+  .legend span { margin-right: 12px; }
+  .native { color: var(--native); } .ai { color: var(--ai); } .fallback { color: var(--fallback); }
+</style>
+</head>
+<body>
+<main>
+  <h1>A2G JS SDK demo</h1>
+  <p>Move with the arrow keys or WASD, hit nearby guards with <kbd>Space</kbd>. Guards run their native AI ("chase when close") unless A2G has a fresh decision for them. Toggle AI mode with the button or <kbd>M</kbd>.</p>
+  <div class="bar">
+    <button id="mode" type="button" aria-pressed="false">AI mode: off (native)</button>
+    <button id="reset" type="button">Reset guards</button>
+    <span id="status">Connecting…</span>
+  </div>
+  <canvas id="game" width="720" height="420" aria-label="Demo arena"></canvas>
+  <div class="bar legend"><span class="native">● native AI</span><span class="ai">● A2G decision</span><span class="fallback">● fallback (native AI runs)</span></div>
+</main>
+<script type="module">
+import { A2G } from '/dist/index.js';
+
+const manifest = await (await fetch('/demo/a2g_manifest.json')).json();
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const SPEED = 60, SIGHT = 160, NATIVE_CHASE = 120;
+const player = { x: 360, y: 210, hp: 1 };
+let guards = [];
+const keys = new Set();
+
+const a2g = new A2G({
+  manifest,
+  // /a2g is forwarded by serve.mjs; ?service=http://127.0.0.1:8787 calls the service directly (needs A2G_ALLOWED_ORIGINS)
+  url: new URLSearchParams(location.search).get('service') ?? '/a2g',
+  game: 'A2G JS demo',
+  world: () => ({ player_hp_fraction: player.hp }),
+  scene: 'Demo arena',
+});
+
+const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const sees = (guard) => distance(guard, player) < SIGHT;
+const step = (guard, sign, dt) => {
+  const d = distance(guard, player) || 1;
+  guard.x += ((player.x - guard.x) / d) * SPEED * dt * sign;
+  guard.y += ((player.y - guard.y) / d) * SPEED * dt * sign;
+};
+
+// The game-specific glue: what a guard observes, which actions are legal now, how to run them.
+a2g.registerAdapter('guard', {
+  observe: (g) => ({ hp_fraction: g.hp, distance_to_player: Math.round(distance(g, player) * 10) / 10, sees_player: sees(g) }),
+  legalActions: (g) => (sees(g) ? ['chase', 'wait', 'retreat'] : ['wait']),
+  execute: (g, action, dt) => {
+    g.state = action;
+    if (action === 'chase') step(g, 1, dt);
+    if (action === 'retreat') step(g, -1, dt);
+    return true;
+  },
+  position: (g) => g,
+  state: (g) => g.state.toUpperCase(),
+  trigger: (g) => {
+    const now = sees(g), spotted = now && !g.saw;
+    g.saw = now;
+    return spotted ? 'player_spotted' : '';
+  },
+});
+a2g.registerAdapter('player', { observe: () => ({ hp_fraction: player.hp }), legalActions: () => [], execute: () => true });
+a2g.track(player, 'player', { name: 'Player' });
+
+function reset() {
+  guards.forEach((g) => a2g.untrack(g));
+  guards = [[120, 90], [600, 110], [140, 340], [580, 330]].map(([x, y], i) => ({ x, y, hp: 1, state: 'wait', saw: false, name: 'Guard ' + (i + 1) }));
+  guards.forEach((g) => a2g.track(g, 'guard', { name: g.name }));
+}
+reset();
+a2g.start();
+
+function setMode(on) {
+  a2g.setAiEnabled(on);
+  const button = document.getElementById('mode');
+  button.setAttribute('aria-pressed', String(on));
+  button.textContent = on ? 'AI mode: on (A2G)' : 'AI mode: off (native)';
+}
+document.getElementById('mode').addEventListener('click', () => setMode(!a2g.aiEnabled));
+document.getElementById('reset').addEventListener('click', reset);
+addEventListener('keydown', (e) => {
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(e.key)) e.preventDefault();
+  if (e.key === 'm' || e.key === 'M') setMode(!a2g.aiEnabled);
+  if (e.key === ' ' && !e.repeat) guards.filter((g) => distance(g, player) < 40).forEach((g) => { g.hp = Math.max(0.1, Math.round((g.hp - 0.3) * 10) / 10); });
+  keys.add(e.key.toLowerCase());
+});
+addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
+
+function update(dt) {
+  const dx = (keys.has('arrowright') || keys.has('d')) - (keys.has('arrowleft') || keys.has('a'));
+  const dy = (keys.has('arrowdown') || keys.has('s')) - (keys.has('arrowup') || keys.has('w'));
+  player.x = Math.min(canvas.width - 10, Math.max(10, player.x + dx * 120 * dt));
+  player.y = Math.min(canvas.height - 10, Math.max(10, player.y + dy * 120 * dt));
+  for (const g of guards) {
+    if (a2g.execute(g, dt)) continue;
+    // Native AI: chase when the player is close, otherwise wait.
+    g.state = distance(g, player) < NATIVE_CHASE ? 'chase' : 'wait';
+    if (g.state === 'chase' && distance(g, player) > 14) step(g, 1, dt);
+  }
+}
+
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name);
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = '#2a2e37';
+  ctx.beginPath(); ctx.arc(player.x, player.y, SIGHT, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = '#e7e9ee';
+  ctx.beginPath(); ctx.arc(player.x, player.y, 8, 0, Math.PI * 2); ctx.fill();
+  ctx.font = '12px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  for (const g of guards) {
+    const decision = a2g.aiEnabled ? a2g.decision(g) : undefined;
+    const controlled = decision?.source === 'AI' && g.state === decision.action;
+    const color = controlled ? css('--ai') : decision?.source === 'FALLBACK' ? css('--fallback') : css('--native');
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(g.x, g.y, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#3a3f4a'; ctx.fillRect(g.x - 12, g.y - 16, 24, 3);
+    ctx.fillStyle = color; ctx.fillRect(g.x - 12, g.y - 16, 24 * g.hp, 3);
+    const extra = controlled && decision.confidence != null ? ` ${decision.confidence.toFixed(2)}` : decision?.source === 'FALLBACK' ? ` (${decision.code})` : '';
+    ctx.fillText(g.state.toUpperCase() + extra, g.x, g.y + 22);
+  }
+  document.getElementById('status').textContent = `Service: ${a2g.serviceStatus}${a2g.lastError ? ' · ' + a2g.lastError : ''}`;
+}
+
+let last = performance.now();
+function frame(now) {
+  update(Math.min(0.05, (now - last) / 1000));
+  last = now;
+  draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

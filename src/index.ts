@@ -17,10 +17,16 @@ export type Position = number[] | { x: number; y: number; z?: number };
 export interface Adapter<E = any> {
   /** Observation fields declared for the entity type in the manifest. */
   observe(entity: E): Fields;
-  /** Actions allowed now. Empty means "do not ask" (observe-only types such as the player). */
-  legalActions(entity: E): string[];
-  /** Perform the action for this step. Return false when it was blocked and the adapter did something safe instead. */
-  execute(entity: E, action: string, dt: number): boolean;
+  /**
+   * Actions allowed now. Empty means "do not ask" (observe-only types such as the player). For a type with decision
+   * slots: { slot: actions } for the slots to ask; a slot left out (or empty) stays with the native AI.
+   */
+  legalActions(entity: E): string[] | Record<string, string[]>;
+  /**
+   * Perform the action for this step. For a type with decision slots, `action` is { slot: action } for the slots A2G
+   * decided; run the native AI for every other slot. Return false when it was blocked and the adapter did something safe.
+   */
+  execute(entity: E, action: any, dt: number): boolean;
   /** Actual executed state, for telemetry. */
   state?(entity: E): string;
   /** Lets the service compute nearby entities and group members. */
@@ -35,11 +41,36 @@ export interface Adapter<E = any> {
 
 export interface ScopeState { scope: string; state?: Fields }
 
+/** Picks one action from provider probabilities; see Options.sample and sampler(). */
+export type Sampler = (probabilities: Record<string, number>, context: { entity: unknown; slot?: string }) => string;
+
+/** One decision slot's result from the service: an action, or a fallback code for that slot only. */
+export interface SlotResult { action?: string; label?: string; confidence?: number | null; probabilities?: Record<string, number>; code?: string; reason?: string }
+
+/**
+ * A sampler driven by the game's own random function (for example a seeded RNG returning [0, 1)), so A2G decisions
+ * vary like native AI and replays stay identical.
+ */
+export function sampler(random: () => number): Sampler {
+  return (probabilities) => {
+    const entries = Object.entries(probabilities);
+    let roll = random() * entries.reduce((sum, [, p]) => sum + p, 0);
+    for (const [action, p] of entries) if ((roll -= p) < 0) return action;
+    return entries[entries.length - 1][0];
+  };
+}
+
 export interface Decision {
   source: 'AI' | 'FALLBACK';
+  /** The action to execute (sampled when Options.sample is set). */
   action?: string;
+  /** Decision slots: the action to execute per decided slot (sampled when Options.sample is set). */
+  actions?: Record<string, string>;
+  /** Decision slots as the service answered them, including per-slot fallbacks. */
+  slots?: Record<string, SlotResult>;
   label?: string;
   confidence?: number | null;
+  probabilities?: Record<string, number>;
   decision_id?: string;
   cached?: boolean;
   trigger?: string;
@@ -73,6 +104,12 @@ export interface Options {
   defaultIntervalMs?: number;
   minIntervalMs?: number;
   telemetryIntervalMs?: number;
+  /**
+   * Draw each AI action from the provider's probabilities instead of taking the most likely one, so behaviour varies
+   * like native AI. Pass sampler(gameRandom) to keep seeded replays identical. Sampling happens on the first execute()
+   * of a decision, in the game's own order.
+   */
+  sample?: Sampler;
   /** Injected for tests or runtimes without a global fetch. */
   fetch?: typeof fetch;
   /** Milliseconds clock. Default performance.now() or Date.now(). */
@@ -322,9 +359,26 @@ export class A2G {
       adapter.release?.(entity);
       return false;
     }
+    if (!decision.ran) this.choose(tracked, decision);
     decision.ran = true;
-    if (!adapter.execute(entity, decision.action!, dt)) decision.blocked = true;
+    if (!adapter.execute(entity, decision.actions ?? decision.action, dt)) decision.blocked = true;
     return true;
+  }
+
+  /** Fix the executed action(s) once: sampled from the probabilities when Options.sample is set, else the service's choice. */
+  private choose(tracked: Tracked, decision: NonNullable<Tracked['decision']>): void {
+    const sample = this.options.sample;
+    const pick = (result: SlotResult, slot?: string) => {
+      const legal = slot === undefined ? this.typeSpec(tracked).actions ?? {} : this.typeSpec(tracked).decisions?.[slot]?.actions ?? {};
+      const options = Object.entries(result.probabilities ?? {}).filter(([action, p]) => Object.hasOwn(legal, action) && isNumber(p) && p > 0);
+      const chosen = sample && options.length ? sample(Object.fromEntries(options), { entity: tracked.entity, slot }) : result.action!;
+      return options.some(([action]) => action === chosen) ? chosen : result.action!;
+    };
+    if (decision.slots) {
+      decision.actions = Object.fromEntries(Object.entries(decision.slots).filter(([, r]) => r.action).map(([slot, r]) => [slot, pick(r, slot)]));
+    } else {
+      decision.action = pick(decision);
+    }
   }
 
   private async ready(): Promise<boolean> {
@@ -374,9 +428,19 @@ export class A2G {
   /** One decide entity, or null when it should not be asked (observe-only or nothing legal). */
   private decideEntity(tracked: Tracked): Record<string, Json> | null {
     const adapter = this.adapters.get(tracked.type)!;
-    const actions = this.typeSpec(tracked).actions ?? {};
-    const legal = (adapter.legalActions(tracked.entity) ?? []).filter((action) => Object.hasOwn(actions, action));
-    if (!legal.length) return null;
+    const spec = this.typeSpec(tracked);
+    const raw = adapter.legalActions(tracked.entity) ?? [];
+    let legal: string[] | Record<string, string[]>;
+    if (spec.decisions) {
+      const slots = Object.entries(isRecord(raw) ? raw : {})
+        .map(([slot, actions]) => [slot, (actions ?? []).filter((action: string) => Object.hasOwn(spec.decisions[slot]?.actions ?? {}, action))] as const)
+        .filter(([, actions]) => actions.length);
+      if (!slots.length) return null;
+      legal = Object.fromEntries(slots);
+    } else {
+      legal = (Array.isArray(raw) ? raw : []).filter((action) => Object.hasOwn(spec.actions ?? {}, action));
+      if (!legal.length) return null;
+    }
     const request: Record<string, Json> = { id: tracked.id, type: tracked.type, observation: adapter.observe(tracked.entity), legal_actions: legal };
     const where = positionArray(adapter.position?.(tracked.entity));
     if (where) request.position = where;
@@ -414,11 +478,16 @@ export class A2G {
       if (!this.aiEnabled || requestEpoch !== this.epoch) continue;  // stale epoch: drop the reply
       this.finish(tracked);
       const answer = replies.get(tracked.id) ?? {};
-      const legal = request.legal_actions as string[];
+      const legal = request.legal_actions as string[] | Record<string, string[]>;
+      // Keep only results whose action was offered; a slot that is missing or invalid stays with the native AI.
+      const slots = Array.isArray(legal) || !isRecord(answer.slots) ? undefined : Object.fromEntries(Object.entries(answer.slots as Record<string, any>)
+        .filter(([slot, r]) => isRecord(r) && (r.action === undefined || legal[slot]?.includes(r.action)) && Object.hasOwn(legal, slot))
+        .map(([slot, r]) => [slot, cleanResult(r)]));
+      const valid = Array.isArray(legal) ? legal.includes(answer.action) : !!slots && Object.values(slots).some((r) => r.action);
       let decision: NonNullable<Tracked['decision']>;
-      if (answer.source === 'AI' && legal.includes(answer.action) && typeof answer.decision_id === 'string') {
+      if (answer.source === 'AI' && valid && typeof answer.decision_id === 'string') {
         decision = {
-          source: 'AI', action: answer.action, label: String(answer.label ?? ''), confidence: isNumber(answer.confidence) ? answer.confidence : null,
+          source: 'AI', ...(slots ? { slots } : cleanResult(answer)),
           decision_id: answer.decision_id, cached: answer.cached === true, trigger: (request.trigger as string) ?? '',
           ttl_ms: isNumber(answer.ttl_ms) ? answer.ttl_ms : 12000, latency_ms: now - started, received_at: now,
           // copies: games often mutate one world or observation object in place
@@ -453,7 +522,9 @@ export class A2G {
     addDeltas(outcome, 'world_', decision.start_world ?? {}, this.world());
     outcome.seconds = round((this.now() - decision.received_at) / 1000, 1);
     void this.request('POST', '/v1/report', {
-      client_id: this.clientId, entity_id: tracked.id, decision_id: decision.decision_id!, action: decision.action!, status, outcome,
+      client_id: this.clientId, entity_id: tracked.id, decision_id: decision.decision_id!,
+      ...(decision.slots ? { actions: decision.actions ?? Object.fromEntries(Object.entries(decision.slots).filter(([, r]) => r.action).map(([k, r]) => [k, r.action!])) }
+        : { action: decision.action! }), status, outcome,
     }, 2000);
   }
 
@@ -507,6 +578,12 @@ export class A2G {
       const decision = tracked.decision as Record<string, any> | undefined;
       for (const key of ['source', 'action', 'label', 'confidence', 'code', 'reason', 'latency_ms', 'cached', 'trigger', 'decision_id']) {
         if (decision?.[key] != null && decision[key] !== '') compact[key] = decision[key];
+      }
+      const executed = decision?.actions ?? (decision?.slots && Object.fromEntries(Object.entries(decision.slots as Record<string, SlotResult>).filter(([, r]) => r.action).map(([k, r]) => [k, r.action!])));
+      if (executed) {
+        compact.action = Object.entries(executed).map(([slot, action]) => `${slot}=${action}`).join(', ');
+        (compact as any).slots = executed;
+        delete compact.label;
       }
       if (decision) compact.age_ms = Math.round(now - decision.received_at);
       if (isNumber(compact.latency_ms)) compact.latency_ms = Math.round(compact.latency_ms);
@@ -597,6 +674,20 @@ export class A2G {
       this.lastError = `Rate limited; retrying in ${wait} s`;
     }
   }
+}
+
+function cleanResult(r: Record<string, any>): SlotResult {
+  const result: SlotResult = {};
+  if (typeof r.action === 'string') {
+    result.action = r.action;
+    result.label = String(r.label ?? '');
+    result.confidence = isNumber(r.confidence) ? r.confidence : null;
+    if (isRecord(r.probabilities)) result.probabilities = Object.fromEntries(Object.entries(r.probabilities).filter(([, p]) => isNumber(p)));
+  } else {
+    result.code = String(r.code ?? 'invalid_choice');
+    result.reason = String(r.reason ?? '');
+  }
+  return result;
 }
 
 function addDeltas(outcome: Fields, prefix: string, before: Fields, after: Fields): void {

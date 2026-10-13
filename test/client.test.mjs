@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import Ajv2020 from 'ajv/dist/2020.js';
-import { A2G } from '../src/index.ts';
+import { A2G, sampler } from '../src/index.ts';
 
 const SCHEMA_FILE = process.env.A2G_SCHEMA ?? new URL('../../a2g-protocol/schema/0.1/a2g.schema.json', import.meta.url).pathname;
 const schema = existsSync(SCHEMA_FILE)
@@ -21,6 +21,10 @@ const MANIFEST = {
     guard: { description: 'A guard.', fields: { hp: 'number', alert: 'boolean' }, actions: { attack: 'Attack', flee: 'Run away' },
       events: { hit: 'Was hit' }, decision_ttl_ms: 1000, refresh_ms: 2000 },
     hero: { description: 'The player.', fields: { hp: 'number' }, actions: {} },
+    worker: { description: 'An employee.', fields: { stress: ['low', 'high'] }, decision_ttl_ms: 1000, decisions: {
+      effort: { description: 'How hard they work', actions: { carry_on: 'As usual', push_harder: 'More', reduce_effort: 'Less' } },
+      help: { actions: { none: 'Nothing', help_colleague: 'Help' } },
+      raise: { actions: { none: 'Nothing', ask_raise: 'Ask for a raise' } } } },
   },
 };
 
@@ -49,8 +53,12 @@ function defaults(path, body) {
   if (path === '/health') return [200, { service: 'a2g', a2g: '0.1', key_configured: true }];
   if (path === '/v1/session') return [200, { ok: true, a2g: '0.1', manifest_hash: 'sha256:' + '0'.repeat(64) }];
   if (path === '/v1/decide') {
-    return [200, { a2g: '0.1', epoch: body.epoch, latency_ms: 5, decisions: body.entities.map((e, i) => (
-      { id: e.id, source: 'AI', action: e.legal_actions[0], label: 'Attack', confidence: 0.9, ttl_ms: 1000, decision_id: `d_${e.id}_${i}` })) }];
+    return [200, { a2g: '0.1', epoch: body.epoch, latency_ms: 5, decisions: body.entities.map((e, i) => (Array.isArray(e.legal_actions)
+      ? { id: e.id, source: 'AI', action: e.legal_actions[0], label: 'Attack', confidence: 0.9, ttl_ms: 1000, decision_id: `d_${e.id}_${i}`,
+          probabilities: Object.fromEntries(e.legal_actions.map((a) => [a, 1 / e.legal_actions.length])) }
+      : { id: e.id, source: 'AI', ttl_ms: 1000, decision_id: `d_${e.id}_${i}`, slots: Object.fromEntries(Object.entries(e.legal_actions).map(([slot, legal]) =>
+          [slot, slot === 'raise' ? { code: 'refused', reason: 'no' } : { action: legal[0], label: legal[0], confidence: 0.5,
+            probabilities: Object.fromEntries(legal.map((a) => [a, 1 / legal.length])) }])) })) }];
   }
   return [200, { ok: true }];
 }
@@ -71,6 +79,11 @@ function setup(reply, extra = {}) {
     release: (g) => released.push(g.name),
   });
   a2g.registerAdapter('hero', { observe: () => ({ hp: 10 }), legalActions: () => [], execute: () => true });
+  a2g.registerAdapter('worker', {
+    observe: (w) => ({ stress: w.stress }),
+    legalActions: (w) => ({ effort: ['carry_on', 'push_harder', 'reduce_effort'], help: w.canHelp ? ['none', 'help_colleague'] : [], raise: ['none', 'ask_raise'] }),
+    execute: (w, actions) => { executed.push([w.name, actions]); return true; },
+  });
   return { a2g, fake, world, executed, released, advance: (ms) => { clock += ms; } };
 }
 
@@ -164,6 +177,46 @@ test('turn-based: a decision that ran is reported as executed even when the turn
   assert.equal(a2g.execute(g, 0), false, 'a decision that was never executed and expired');
   await a2g.decideNow();
   assert.deepEqual(fake.sent.filter((m) => m.path === '/v1/report').map((m) => m.body.status), ['executed', 'expired']);
+});
+
+test('decision slots: one action per slot, a slot can fall back alone, reports carry executed actions', async () => {
+  const { a2g, fake, executed } = setup();
+  const w = { name: 'w1', stress: 'high', canHelp: true };
+  a2g.track(w, 'worker');
+  a2g.setAiEnabled(true);
+  await a2g.decideNow();
+  const request = fake.sent.find((m) => m.path === '/v1/decide').body.entities[0];
+  assert.deepEqual(Object.keys(request.legal_actions), ['effort', 'help', 'raise']);
+  assert.equal(a2g.execute(w, 0), true);
+  assert.deepEqual(executed, [['w1', { effort: 'carry_on', help: 'none' }]], 'the refused raise slot is left to native AI');
+  a2g.untrack(w);
+  const report = fake.sent.find((m) => m.path === '/v1/report').body;
+  assert.deepEqual(report.actions, { effort: 'carry_on', help: 'none' });
+
+  const v = { name: 'w2', stress: 'low', canHelp: false };
+  a2g.track(v, 'worker', { name: 'w2' });
+  await a2g.decideNow();
+  assert.deepEqual(Object.keys(fake.sent.findLast((m) => m.path === '/v1/decide').body.entities[0].legal_actions), ['effort', 'raise'], 'empty slots are not asked');
+  await a2g.sendTelemetry();
+  const item = fake.sent.findLast((m) => m.path === '/v1/telemetry').body.entities.find((e) => e.name === 'w2');
+  assert.equal(item.decision.action, 'effort=carry_on');
+});
+
+test('sampling with the game RNG: varied like native AI, identical on replay', async () => {
+  const run = async () => {
+    let seed = 7;
+    const random = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);  // a seeded game RNG
+    const { a2g, executed } = setup(undefined, { sample: sampler(random) });
+    const guards = Array.from({ length: 30 }, (_, i) => guard('g' + i));
+    guards.forEach((g) => a2g.track(g, 'guard'));
+    a2g.setAiEnabled(true);
+    await a2g.decideNow();
+    guards.forEach((g) => a2g.execute(g, 0));
+    return executed.map(([, action]) => action);
+  };
+  const first = await run();
+  assert.ok(first.includes('attack') && first.includes('flee'), 'both actions occur, not only the most likely one');
+  assert.deepEqual(await run(), first, 'same seed, same actions');
 });
 
 test('decideNow sends every entity in batches of 16', async () => {

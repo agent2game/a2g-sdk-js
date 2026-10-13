@@ -4,14 +4,14 @@ Client for the [A2G (Agent2Game) protocol](https://agent2game.org) 0.1 for web a
 
 | SDK | Protocol | Runtime |
 | --- | --- | --- |
-| `0.1.1` | `0.1` | Browsers with `fetch`; Node 22.18+ |
+| `0.2.0` | `0.1` | Browsers with `fetch`; Node 22.18+ |
 
 ## Install
 
 Not on npm yet. Install from GitHub (the package builds itself on install):
 
 ```sh
-npm install github:agent2game/a2g-sdk-js#v0.1.1
+npm install github:agent2game/a2g-sdk-js#v0.2.0
 ```
 
 ## Demo
@@ -71,6 +71,31 @@ await a2g.sendTelemetry();           // after every turn: state changes only on 
 ```
 
 Keep the client on the server when the game state must not reach the browser.
+
+## Several choices per turn, and your game's odds
+
+When an entity makes several independent choices at once (how hard to work, whether to help a colleague, whether to ask for a raise), declare [decision slots](https://agent2game.org/specification/manifest/#decision-slots) in the manifest instead of squeezing them into one action:
+
+```ts
+a2g.registerAdapter('employee', {
+  observe: (p) => ({ workload: p.workloadBand, pay_vs_market: p.payBand }),
+  legalActions: (p) => ({                      // slots to ask; leave one out to keep it native
+    effort: ['carry_on', 'push_harder', 'reduce_effort'],
+    help: p.colleagueOverloaded ? ['none', 'help_colleague'] : [],
+    raise: ['none', 'ask_raise'],
+  }),
+  execute: (p, actions) => applyBehaviours(p, actions), // { effort: 'carry_on', raise: 'none' }; run native AI for missing slots
+});
+```
+
+The service returns the provider's probabilities with every choice. To keep your game's variety and seeded replays, sample with your own RNG instead of always taking the most likely action:
+
+```ts
+import { A2G, sampler } from '@agent2game/a2g';
+const a2g = new A2G({ manifest, sample: sampler(game.rng) }); // game.rng(): number in [0, 1)
+```
+
+Sampling happens on a decision's first `execute()`, in your loop's order, so replays stay identical. Reports carry the actions the game actually executed.
 
 ## Adapter contract
 

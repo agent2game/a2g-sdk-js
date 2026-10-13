@@ -4,15 +4,17 @@ Client for the [A2G (Agent2Game) protocol](https://agent2game.org) 0.1 for web a
 
 | SDK | Protocol | Runtime |
 | --- | --- | --- |
-| `0.2.1` | `0.1` | Browsers with `fetch`; Node 22.18+ |
+| `0.2.2` | `0.1` | Browsers with `fetch`; Node 22.18+ |
 
 ## Install
 
 Not on npm yet. Install from GitHub (the package builds itself on install):
 
 ```sh
-npm install github:agent2game/a2g-sdk-js#v0.2.1
+npm install github:agent2game/a2g-sdk-js#v0.2.2
 ```
+
+Tags are never moved, but for supply-chain safety you can pin the exact commit a tag points to: `git ls-remote https://github.com/agent2game/a2g-sdk-js v0.2.2` prints it, then `npm install github:agent2game/a2g-sdk-js#<commit>`.
 
 ## Demo
 

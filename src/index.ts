@@ -484,12 +484,12 @@ export class A2G {
       // Keep only results whose action was offered; a slot that is missing or invalid stays with the native AI.
       const slots = Array.isArray(legal) || !isRecord(answer.slots) ? undefined : Object.fromEntries(Object.entries(answer.slots as Record<string, any>)
         .filter(([slot, r]) => isRecord(r) && (r.action === undefined || legal[slot]?.includes(r.action)) && Object.hasOwn(legal, slot))
-        .map(([slot, r]) => [slot, cleanResult(r)]));
+        .map(([slot, r]) => [slot, cleanResult(r, legal[slot])]));
       const valid = Array.isArray(legal) ? legal.includes(answer.action) : !!slots && Object.values(slots).some((r) => r.action);
       let decision: NonNullable<Tracked['decision']>;
       if (answer.source === 'AI' && valid && typeof answer.decision_id === 'string') {
         decision = {
-          source: 'AI', ...(slots ? { slots } : cleanResult(answer)), legal,
+          source: 'AI', ...(slots ? { slots } : cleanResult(answer, legal as string[])), legal,
           decision_id: answer.decision_id, cached: answer.cached === true, trigger: (request.trigger as string) ?? '',
           ttl_ms: isNumber(answer.ttl_ms) ? answer.ttl_ms : 12000, latency_ms: now - started, received_at: now,
           // copies: games often mutate one world or observation object in place
@@ -583,7 +583,8 @@ export class A2G {
       }
       const executed = decision?.actions ?? (decision?.slots && Object.fromEntries(Object.entries(decision.slots as Record<string, SlotResult>).filter(([, r]) => r.action).map(([k, r]) => [k, r.action!])));
       if (executed) {
-        compact.action = Object.entries(executed).map(([slot, action]) => `${slot}=${action}`).join(', ');
+        const summary = Object.entries(executed).map(([slot, action]) => `${slot}=${action}`).join(', ');
+        compact.action = summary.length > 80 ? summary.slice(0, 79) + '…' : summary;  // telemetry strings are at most 80 chars; slots carries all
         (compact as any).slots = executed;
         delete compact.label;
       }
@@ -678,13 +679,16 @@ export class A2G {
   }
 }
 
-function cleanResult(r: Record<string, any>): SlotResult {
+/** A slot or decision result as the game may use it: probabilities only for offered actions and within [0, 1]. */
+function cleanResult(r: Record<string, any>, legal: string[]): SlotResult {
   const result: SlotResult = {};
   if (typeof r.action === 'string') {
     result.action = r.action;
     result.label = String(r.label ?? '');
     result.confidence = isNumber(r.confidence) ? r.confidence : null;
-    if (isRecord(r.probabilities)) result.probabilities = Object.fromEntries(Object.entries(r.probabilities).filter(([, p]) => isNumber(p)));
+    if (isRecord(r.probabilities)) {
+      result.probabilities = Object.fromEntries(Object.entries(r.probabilities).filter(([action, p]) => legal.includes(action) && isNumber(p) && p >= 0 && p <= 1));
+    }
   } else {
     result.code = String(r.code ?? 'invalid_choice');
     result.reason = String(r.reason ?? '');

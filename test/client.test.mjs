@@ -231,6 +231,32 @@ test('sampling never picks an action the request did not offer', async () => {
   assert.deepEqual(executed, [['g1', 'attack']]);
 });
 
+test('probabilities handed to the game are only for offered actions and within [0, 1]', async () => {
+  const { a2g } = setup((path, body) => (path === '/v1/decide' ? [200, { a2g: '0.1', epoch: body.epoch, decisions: [
+    { id: body.entities[0].id, source: 'AI', action: 'attack', ttl_ms: 1000, decision_id: 'd_p', probabilities: { attack: 1.7, flee: 0.4, dance: 0.9 } }] }] : undefined));
+  const g = guard('g1');
+  a2g.track(g, 'guard');
+  a2g.setAiEnabled(true);
+  await a2g.decideNow();
+  assert.deepEqual(a2g.decision(g).probabilities, { flee: 0.4 });
+});
+
+test('telemetry stays within the schema with many decision slots', async () => {
+  const many = { entity_types: { worker: { decisions: Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`slot_number_${i}`, { actions: { none: 'Nothing', act: 'Act' } }])) } } };
+  const fake = service();
+  const a2g = new A2G({ manifest: many, fetch: fake.fetch, now: () => 1000 });
+  const legal = Object.fromEntries(Object.keys(many.entity_types.worker.decisions).map((slot) => [slot, ['none', 'act']]));
+  a2g.registerAdapter('worker', { observe: () => ({}), legalActions: () => legal, execute: () => true });
+  const w = {};
+  a2g.track(w, 'worker');
+  a2g.setAiEnabled(true);
+  await a2g.decideNow();
+  a2g.execute(w, 0);
+  await a2g.sendTelemetry();  // the fake service validates the message against the schema
+  const decision = fake.sent.findLast((m) => m.path === '/v1/telemetry').body.entities[0].decision;
+  assert.ok(decision.action.length <= 80 && Object.keys(decision.slots).length === 12);
+});
+
 test('decideNow sends every entity in batches of 16', async () => {
   const { a2g, fake } = setup();
   const guards = Array.from({ length: 40 }, (_, i) => guard('g' + i));

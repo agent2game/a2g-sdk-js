@@ -16,7 +16,7 @@ npm install github:agent2game/a2g-sdk-js#v0.2.1
 
 ## Demo
 
-A browser page with a player and four guards (plain canvas, no build tools), the same scene as the Godot SDK demo. Start a decision service first, for example the [reference service](https://github.com/agent2game/a2g-service): `docker run -d -p 127.0.0.1:8787:8787 -e OPENAI_API_KEY=... ghcr.io/agent2game/a2g-service:0.1.0` (or `TYPESAFE_API_KEY` with `A2G_PROVIDER=jev`). Then:
+A browser page with a player and four guards (plain canvas, no build tools), the same scene as the Godot SDK demo. Start a decision service first, for example the [reference service](https://github.com/agent2game/a2g-service): `docker run -d -p 127.0.0.1:8787:8787 -e OPENAI_API_KEY=... ghcr.io/agent2game/a2g-service:0.1.1` (or `TYPESAFE_API_KEY` with `A2G_PROVIDER=jev`). Then:
 
 ```sh
 npm ci && npm run build && npm run demo   # http://127.0.0.1:5180/

@@ -110,22 +110,7 @@ Same behavior as the [Godot SDK](https://agent2game.org/implementations/godot-sd
 The local profile rejects other origins, so a page on `http://localhost:5173` cannot call `http://127.0.0.1:8787` until you list it. Two ways:
 
 1. **List the dev server's origin** (simplest). Start the service with exact loopback origins, comma-separated: `A2G_ALLOWED_ORIGINS=http://localhost:5173`. The service then answers CORS for `/v1/*` and `/health` from those origins only (never `*`, never console routes). Use `new A2G({ manifest, url: 'http://127.0.0.1:8787' })`.
-2. **Proxy through the dev server** and drop the browser's `Origin`, for example with Vite:
-
-```ts
-// vite.config.ts
-export default {
-  server: {
-    proxy: {
-      '/a2g': {
-        target: 'http://127.0.0.1:8787', changeOrigin: true, rewrite: (path) => path.replace(/^\/a2g/, ''),
-        configure: (proxy) => proxy.on('proxyReq', (request) => request.removeHeader('origin')),
-      },
-    },
-  },
-};
-// new A2G({ manifest, url: '/a2g' })
-```
+2. **Proxy through the dev server.** The proxy forwards without the browser's `Origin`, so it must first do what the service would: accept only its own loopback `Host` and no foreign `Origin`, and forward only `/v1/*` and `/health`. Otherwise any web page in the browser can reach the service through it. `demo/serve.mjs` is a small example.
 
 The demo shows both: `/` uses its own forward, `/?service=http://127.0.0.1:8787` calls the service directly (start it with `A2G_ALLOWED_ORIGINS=http://127.0.0.1:5180`).
 
